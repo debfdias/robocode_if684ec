@@ -1,0 +1,196 @@
+
+
+package Friboi;
+
+
+import Friboi.*;
+import robocode.*;
+import robocode.ScannedRobotEvent;
+
+
+//
+// Structure to store information about the active target.
+//
+
+declare Target
+   name: String
+   x: double
+   y: double
+   distance: double
+end
+
+
+//
+// Queries.
+//
+
+query "query_actions"
+  accion: Action()
+end
+
+
+//
+// Rule to dispose actions of the same kind that have lower priority.
+//
+
+rule "Dispose actions of the same kind that have lower priority."
+when
+	$action1: Action($kind: type, $priority1: priority)
+	$action2: Action(type == $kind, $priority2: priority)
+	eval($priority1 > $priority2)
+then
+    retract($action2);
+end
+
+//
+// Rule to completely rotate the radar when not following an enemy.
+//
+
+rule "sin robots a la vista -> giro completo del radar"
+when
+	not (exists ScannedRobotEvent())
+then
+	insert (new Action(Action.GIRAR_RADAR_DER, 360, 1));
+end
+
+//
+// Rule to completely rotate the radar and perform random movements
+// when not following an enemy.
+//
+
+rule "parado sin victima -> moverse al azar (girar+avanzar)"
+when
+  RobotState( distanceRemaining == 0 )
+  not (exists Target())
+  $batalla: BattleState()
+then
+  insert(new Action(Action.GIRAR_RADAR_DER, 360, 1));
+  insert(new Action(Action.GIRAR_TANQUE_DER, (360*Math.random() - 180), 1));
+  insert(new Action(Action.GIRAR_CANON_DER, (360*Math.random() - 180), 1));
+  double avance = Math.min($batalla.getAnchoCampo(), $batalla.getAltoCampo())*Math.random();
+  insert(new Action(Action.AVANZAR, avance, 1));
+  System.out.println("regla 3");
+end
+
+//
+// Rule triggered when an enemy is detect, makes the robot move towards the enemy
+// while pointing the gun in its direction.
+//
+
+rule "victima detectada -> actualizar datos e ir hacia ella"
+   when
+      $datosVictima: Target ($nombreVictima: name)
+      $status : RobotState()
+      $victimaEscaneada: ScannedRobotEvent(name == $nombreVictima)
+   then
+      double anguloAbsoluto = Conveniences.anguloAbsoluto($status.getHeading(), $victimaEscaneada.getBearing());
+      $datosVictima.setX(Conveniences.calcularX($status.getX(), anguloAbsoluto, $victimaEscaneada.getDistance()));                                            
+      $datosVictima.setY(Conveniences.calcularX($status.getY(), anguloAbsoluto, $victimaEscaneada.getDistance()));
+      $datosVictima.setDistance($victimaEscaneada.getDistance());
+      
+      insert(new Action(Action.GIRAR_TANQUE_DER, $victimaEscaneada.getBearing(), 1));
+      double anguloRelativoCanon = Conveniences.anguloRelativo($status.getHeading(), $status.getGunHeading()); // Descontar el desplazam. actual del canon 
+      insert(new Action(Action.GIRAR_CANON_DER, ($victimaEscaneada.getBearing() - anguloRelativoCanon), 1));
+      double anguloRelativoRadar =  Conveniences.anguloRelativo($status.getHeading(), $status.getRadarHeading()); // Descontar el desplazam. actual del radar  
+      insert(new Action(Action.GIRAR_RADAR_DER, ($victimaEscaneada.getBearing() - anguloRelativoRadar), 1));
+      insert(new Action(Action.AVANZAR, ($victimaEscaneada.getDistance()-100), 1));
+end
+
+//
+// Rule triggered when an enemy is detected and it is in range, fire with the
+// maximum power available.
+//
+
+rule "victima en punto de mira -> disparar"
+   when
+      $status : RobotState()
+      Target ($nombreVictima: name)
+      // Target detectada y cañon apunta en su angulo (con un margen de 2 grados)
+      ScannedRobotEvent(name == $nombreVictima, $anguloRelativoVictima: bearing)                       
+      eval (Math.abs($anguloRelativoVictima - Conveniences.anguloRelativo($status.getHeading(), $status.getGunHeading())) <= 2)   
+   then
+      insert(new Action(Action.DISPARAR, Math.min(Rules.MAX_BULLET_POWER, 0.10*$status.getEnergy()), 1));
+      System.out.println("Target "+$nombreVictima+" a tiro => disparar");
+end
+
+//
+// Rule to move towards the first enemy to show up on the radar.
+//
+
+rule "sin victima -> tomar la primera que aparezca"
+when
+	not (exists Target())
+	$victimaEscaneada: ScannedRobotEvent()
+	$status: RobotState()
+then
+    Target victima = new Target();
+      double anguloAbsoluto = Conveniences.anguloAbsoluto($status.getHeading(), $victimaEscaneada.getBearing());
+      victima.setName($victimaEscaneada.getName());
+      victima.setX(Conveniences.calcularX($status.getX(), anguloAbsoluto, $victimaEscaneada.getDistance()));                                            
+      victima.setY(Conveniences.calcularX($status.getY(), anguloAbsoluto, $victimaEscaneada.getDistance()));
+      victima.setDistance($victimaEscaneada.getDistance());
+      insert(victima);
+      
+      insert(new Action(Action.GIRAR_TANQUE_DER, $victimaEscaneada.getBearing(), 1));
+      double anguloRelativoCanon = Conveniences.anguloRelativo($status.getHeading(), $status.getGunHeading()); // Descontar el desplazam. actual del canon 
+      insert(new Action(Action.GIRAR_CANON_DER, ($victimaEscaneada.getBearing() - anguloRelativoCanon), 1));
+      double anguloRelativoRadar =  Conveniences.anguloRelativo($status.getHeading(), $status.getRadarHeading()); // Descontar el desplazam. actual del radar  
+      insert(new Action(Action.GIRAR_RADAR_DER, ($victimaEscaneada.getBearing() - anguloRelativoRadar), 1));
+      insert(new Action(Action.AVANZAR, ($victimaEscaneada.getDistance()-100), 1));    
+      System.out.println("regla 6"); 
+end
+
+//
+// Resets the enemy structure when it is destroyed.
+//
+
+rule "muerte de la victima"
+when
+   $victima: Target ($nombreVictima: name)
+   RobotDeathEvent( name == $nombreVictima )
+then 
+   retract($victima);
+   System.out.println("Uno menos");
+end
+
+//
+// Rule triggered after hitting a wall, return through the path 
+// forming the opposite angle.
+//
+
+rule "choque con muro"
+when
+   HitWallEvent($anguloRelativo: bearing)
+then
+   insert(new Action(Action.GIRAR_TANQUE_DER, (- $anguloRelativo), 5));
+   insert(new Action(Action.AVANZAR, 100, 5));
+end
+
+//
+// After hitting the active enemy target, go back through the same path.
+//
+
+rule "choque con victima"
+when
+   HitRobotEvent($nombre: name, $anguloRelativo: bearing)
+   Target(name == $nombre)
+then
+   insert(new Action(Action.RETROCEDER, 100, 5));
+end
+
+//
+// After hitting an enemy, go back through path formed by the opposite angle.
+//
+
+rule "choque con otro robot"
+when
+   HitRobotEvent($nombre: name, $anguloRelativo: bearing)
+   (or (not (exists Target()))
+       (Target(name != $nombre)))
+then
+   insert(new Action(Action.GIRAR_TANQUE_DER, (- $anguloRelativo*1.50), 5));
+   insert(new Action(Action.AVANZAR, 100, 5));
+end
+
+
+
